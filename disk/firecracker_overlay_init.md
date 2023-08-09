@@ -1,0 +1,1 @@
+https://github.com/firecracker-microvm/firecracker-containerd/blob/master/tools/image-builder/files_debootstrap/sbin/overlay-init

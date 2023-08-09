@@ -1,0 +1,110 @@
+use std::ffi::{CStr, CString};
+use std::os::unix::io::AsRawFd;
+
+use super::config::create_image_jconf;
+use super::gtvs_message::{GtvsMessageReader, GtvsMessageWriter};
+use super::hash_table::{HashTable, Item};
+use super::ip_allocator::IPAllocator;
+use super::net::connect_unix;
+use super::pool::NamespacePool;
+use super::protobuf::parse_create_image_mess;
+use super::waiter::Waiter;
+
+use jail::subproc;
+
+use sys_util::epoll::{epoll_ctl, EpollEvent, EpollFlags, EpollOp};
+
+pub fn create_image_handler<'a>(
+    local_cloud_provider: &str,
+    gtvs_mess_buffer: &mut GtvsMessageReader,
+    gtvs_mess_writer: &mut GtvsMessageWriter,
+    socket_path_outgoing: &str,
+    num_cpus: i64,
+    efd: i32,
+    pool: &mut NamespacePool,
+    hash_table: &mut HashTable<'a>,
+    ip_allocator: &mut IPAllocator,
+    waiter: &mut Waiter,
+    gw: &'a CStr,
+) {
+    println!("create_image_handler");
+    let mess = gtvs_mess_buffer.get_message();
+    let (base_image, run_admin, exe_id) =
+        parse_create_image_mess(mess).expect("could not parse create image message");
+
+    if run_admin {
+        println!("WARNING: runnning create image as admin");
+    }
+
+    let socket_stdout_stdin = connect_unix(socket_path_outgoing).unwrap();
+
+    let fd_stdin_stdout_stderr = socket_stdout_stdin.as_raw_fd();
+
+    let allocated_ip = ip_allocator.allocate().expect("could not allocate ip");
+
+    let mut jconf = create_image_jconf(
+        local_cloud_provider,
+        base_image,
+        pool.uts,
+        num_cpus,
+        run_admin,
+        ip_allocator.ip_increment_to_ip(allocated_ip),
+        gw,
+    )
+    .expect("could not create image jconf");
+    jconf.fd_in = fd_stdin_stdout_stderr;
+    jconf.fd_out = fd_stdin_stdout_stderr;
+    jconf.fd_err = fd_stdin_stdout_stderr;
+
+    let (child_pid, child_pidfd, child_err) = match subproc::run_child_pidfd(
+        &mut jconf,
+        vec![
+            unsafe { CStr::from_bytes_with_nul_unchecked(b"/bin/bash\0") },
+            unsafe { CStr::from_bytes_with_nul_unchecked(b"-i\0") },
+        ],
+        vec![
+            unsafe {
+                CStr::from_bytes_with_nul_unchecked(
+                    b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0",
+                )
+            },
+            unsafe {
+                CStr::from_bytes_with_nul_unchecked(
+                    b"TERM=xterm\0", // try xterm-256color ; vt100 ; vt220
+                )
+            },
+        ],
+        Some(CString::new("/bin/bash").unwrap()),
+    ) {
+        Ok(v) => v,
+        Err(e) => panic!(format!("could not run child: {}", e)),
+    };
+
+    if let Some(child_err) = child_err {
+        println!("Received ERROR from child: {}", child_err);
+        waiter.wait_pid_from_err(child_pid, exe_id, gtvs_mess_writer, &jconf, None);
+        return;
+    }
+
+    let mut event = EpollEvent::new(
+        EpollFlags::EPOLLIN | EpollFlags::EPOLLONESHOT,
+        child_pid as u64,
+    );
+    epoll_ctl(efd, EpollOp::EpollCtlAdd, child_pidfd, &mut event)
+        .expect("could not register child_pidfd into epoll");
+
+    println!(
+        "registered child_pidfd in epoll: {} {}",
+        child_pidfd, child_pid
+    );
+
+    hash_table.insert(Item {
+        // timestamp_micro: 0,
+        pid: child_pid,
+        exe_id: exe_id,
+        jconf: jconf,
+        ovdir: None,
+        std_socket: None,
+        toaster_listener: None,
+    });
+}

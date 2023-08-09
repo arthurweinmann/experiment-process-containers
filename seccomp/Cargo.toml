@@ -1,0 +1,7 @@
+[package]
+name = "seccomp"
+version = "0.1.0"
+authors = ["Firecracker inspiration"]
+
+[dependencies]
+libc = ">=0.2.69"
