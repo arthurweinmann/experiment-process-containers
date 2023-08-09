@@ -1,7 +1,9 @@
 # DISCLAIMER: THIS IS AN OLD EXPERIMENT MADE PUBLIC
 
 This repository contains an old experiment of mine, so it should not be used as is and probably won't work.
-Nevertheless, it may give you some useful information. I used it as a way to learn Rust too so it not very pretty.
+Nevertheless, it may give you some useful information. 
+
+I used it as a way to learn Rust too so it is not very pretty and contains a lot of notes about Rust behaviours and syntax.
 Also the version of Rust used is quite old now.
 
 With all that said, enjoy!
